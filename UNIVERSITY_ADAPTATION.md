@@ -57,3 +57,34 @@ USB y modo desarrollador.
 - El runtime VR sigue siendo version-guarded: si el engine de la copia difiere
   demasiado del 2.11.311 esperado, los hooks opcionales se desactivan en runtime.
 - Mantén `libGame.so` byte-idéntico en disco; el kit no lo modifica.
+
+## Arquitectura del mod VR (extraída del code graph)
+
+El code graph del proyecto (`graphify-out/graph.json`, 5814 nodos / 10172 edges)
+muestra tres subsistemas conectados:
+
+- **`loader/src/com/savr/SavrApplication.java`** (comunidad 74, grado 15): el
+  `Application` de Android que se carga antes de la actividad del juego. Crea la
+  superficie de render VR (`createGameSurface`), engancha la textura del juego
+  (`attachGameTexture` / `updateGameTexture`) y delega a `nativeOnApplicationCreate`.
+- **`native/src/VrCamera.cpp`** (comunidad 4, grado 627): el núcleo de render
+  estéreo. Contiene `OnRenderScene`, `OnScanWorld`, `OnSetupMapEntityVisibility`,
+  el consumidor de `RenderQueue` y los contadores de LOD/culling para la cámara
+  de aeronaves. Es el archivo más conectado del runtime.
+- **`native/src/Xr.cpp` / `Xr.h`** (comunidad XR): la capa OpenXR que posee la
+  sesión del headset, los swapchains, el estado de los controladores, las manos
+  VR y las capas de composición.
+
+El flujo es: `SavrApplication` (Java) carga `libsavr.so` → el native resuelve
+los símbolos exportados de `libGame.so` → instala hooks version-guarded → el
+hilo de juego graba las dos vistas de ojo vía RenderWare y el hilo OpenXR
+compone la salida en el headset. Los controladores de Quest se traducen a la
+entrada de gamepad móvil existente del juego.
+
+## Nota sobre graphify y los binarios del juego
+
+`python -m graphify extract` indexa **solo código fuente** (C/C++, Java, Python,
+scripts). Los binarios comprimidos (`gta_sa_2.11.311.apk`, el `.7z` del audio
+mod) se reportan como "no clasificados" y se omiten: graphify no es un extractor
+de archivos comprimidos, sino un indexador de código. Por eso el graph se construye
+desde la raíz del source-kit y no desde los APK/mod pack.
