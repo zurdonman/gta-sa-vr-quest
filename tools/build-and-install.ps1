@@ -10,7 +10,8 @@ param(
     [string]$Keystore,
     [switch]$BuildOnly,
     [switch]$NonInteractive,
-    [switch]$PersonalUpdate
+    [switch]$PersonalUpdate,
+    [switch]$AllowUnofficialSource
 )
 
 Set-StrictMode -Version 2.0
@@ -755,11 +756,20 @@ function Assert-BuildArtifacts {
             throw 'Personal update output signer does not match the existing APK set.'
         }
     }
+    elseif ($AllowUnofficialSource.IsPresent) {
+        # University / personal-copy adaptation: the user supplies their own
+        # legally obtained GTA SA APK (e.g. a self-contained 2.5 GB build). We
+        # skip the official Google Play signer and retail libGame.so checks and
+        # trust the engine hash recorded by assemble.py for this source.
+        Write-Host 'Unofficial-source mode: skipping official Play signer and retail libGame.so checks.' -ForegroundColor Yellow
+    }
     else {
         if (-not [bool]$manifest.officialSource) { throw 'The selected APK set is not the verified official retail source.' }
         if ([string]$manifest.sourceSignerSha256 -ne $script:ExpectedSourceSigner) { throw 'Official source signer hash changed.' }
     }
-    if ([string]$manifest.libGameSha256 -ne $script:ExpectedLibGame) { throw 'Official libGame.so hash changed.' }
+    if ([string]$manifest.libGameSha256 -ne $script:ExpectedLibGame -and -not $AllowUnofficialSource.IsPresent) {
+        throw 'Official libGame.so hash changed.'
+    }
     if ([string]::IsNullOrWhiteSpace([string]$manifest.outputSignerSha256)) { throw 'Output signer is missing from the build manifest.' }
 
     $outputRoot = Join-Path $BuildRoot 'out'
@@ -1369,6 +1379,7 @@ function Invoke-Main {
         '--validate-only'
     )
     if ($PersonalUpdate.IsPresent) { $validateArguments += '--personal-update-source' }
+    if ($AllowUnofficialSource.IsPresent) { $validateArguments += '--allow-unofficial-source' }
     Invoke-NativeLive -FilePath $python -Arguments $validateArguments
 
     Write-Step 'Building and assembling the verified personal APK set'
@@ -1384,7 +1395,8 @@ function Invoke-Main {
         -AudioSource $resolvedAudioSource `
         -Keystore $keystore `
         -Package `
-        -PersonalUpdateSource:$PersonalUpdate.IsPresent
+        -PersonalUpdateSource:$PersonalUpdate.IsPresent `
+        -AllowUnofficialSource:$AllowUnofficialSource.IsPresent
 
     Write-Step 'Hash-checking build outputs and staged Quest payloads'
     $buildInfo = Assert-BuildArtifacts -BuildRoot $buildRoot -PersonalUpdate:$PersonalUpdate.IsPresent

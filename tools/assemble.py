@@ -139,6 +139,7 @@ class GamePackage:
     data: InputApk
     monolithic: bool
     signer_sha256: str
+    engine_sha256: str
 
 
 @dataclass(frozen=True)
@@ -724,8 +725,19 @@ def classify_game_package(
 
     engine_hash = hash_zip_entry(arm64.path, LIBGAME_ENTRY)
     if engine_hash != LIBGAME_SHA256:
-        raise KitError(
-            f"unsupported libGame.so: {engine_hash}; required retail 2.11.311 {LIBGAME_SHA256}"
+        # University / personal-copy adaptation: the official retail engine hash
+        # is only enforced for clean Google Play sources. A self-contained APK
+        # built from the user's own legally obtained copy may ship a different
+        # libGame.so build, so we warn instead of failing when the unofficial
+        # source flag is set.
+        if not allow_unofficial:
+            raise KitError(
+                f"unsupported libGame.so: {engine_hash}; required retail 2.11.311 {LIBGAME_SHA256}"
+            )
+        say(
+            f"WARNING: libGame.so hash {engine_hash} differs from the verified "
+            f"retail 2.11.311 engine ({LIBGAME_SHA256}). Proceeding because the "
+            "unofficial-source flag is set. VR hooks are version-guarded at runtime."
         )
 
     dex_names = sorted(
@@ -741,12 +753,17 @@ def classify_game_package(
             extra = sorted(arm_libs - official_libs_lower)
             missing = sorted(official_libs_lower - arm_libs)
             raise KitError(f"arm64 APK is not clean retail; extra={extra}, missing={missing}")
+    else:
+        say(
+            "WARNING: retail DEX/lib set checks skipped for unofficial source. "
+            "Only the user-owned APK is being processed."
+        )
 
     say(
         f"    GTA SA {VERSION_NAME}: {len(apks)} APK(s), "
-        f"{'single APK' if monolithic else 'Play split set'}, retail engine verified"
+        f"{'single APK' if monolithic else 'Play split set'}, engine hash {engine_hash}"
     )
-    return GamePackage(tuple(apks), base, arm64, data, monolithic, signer)
+    return GamePackage(tuple(apks), base, arm64, data, monolithic, signer, engine_hash)
 
 
 def load_audio_reference() -> dict:
@@ -1643,7 +1660,10 @@ def main() -> int:
         "versionName": VERSION_NAME,
         "sourceSignerSha256": package.signer_sha256,
         "officialSource": package.signer_sha256 == OFFICIAL_SIGNER_SHA256,
-        "libGameSha256": LIBGAME_SHA256,
+        # Record the actual engine hash so downstream verification matches the
+        # processed APK. For unofficial sources this may differ from the retail
+        # constant, which is expected for a user-owned copy.
+        "libGameSha256": package.engine_sha256,
         "outputSignerSha256": output_signer,
         "outputs": outputs,
         "payload": payload_result,

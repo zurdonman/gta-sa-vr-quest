@@ -8,6 +8,9 @@
 /.gradle/
 /.idea/
 /.vscode/
+
+# Graphify code-graph index (generated artifact)
+/graphify-out/
 **/__pycache__/
 *.py[cod]
 *.o
