@@ -51,6 +51,13 @@ public final class SavrApplication extends Application {
             "vr_hud.ini",
             "vr_locomotion.ini"
     };
+            private static final String[] VR_HAND_ASSETS = {
+                "BigHandLeft.uxrh",
+                "BigHandRight.uxrh",
+                "BigHandLeftPalm.uxrh",
+                "BigHandRightPalm.uxrh",
+                "BigHandsAlbedo.rgba"
+            };
 
     static {
         try {
@@ -69,6 +76,7 @@ public final class SavrApplication extends Application {
         }
 
         installMissingDefaultSettings();
+        installMissingHandAssets();
         nativeOnApplicationCreate(SavrApplication.class.getClassLoader());
 
         registerActivityLifecycleCallbacks(new ActivityLifecycleCallbacks() {
@@ -157,6 +165,54 @@ public final class SavrApplication extends Application {
                 continue;
             }
             android.util.Log.i(TAG, "installed shipping default " + name);
+        }
+    }
+
+    private void installMissingHandAssets() {
+        final File filesDirectory = getExternalFilesDir(null);
+        if (filesDirectory == null) {
+            android.util.Log.w(TAG, "VR hand assets skipped: no writable app directory");
+            return;
+        }
+        final File destinationDirectory = new File(filesDirectory, "vrhands");
+        if (!destinationDirectory.exists() && !destinationDirectory.mkdirs()) {
+            android.util.Log.e(TAG, "could not create VR hand asset directory: " + destinationDirectory);
+            return;
+        }
+
+        for (String name : VR_HAND_ASSETS) {
+            final File destination = new File(destinationDirectory, name);
+            if (destination.isFile()) {
+                continue;
+            }
+
+            final File temporary = new File(destinationDirectory, name + ".shipping.tmp");
+            try (InputStream input = getAssets().open("vrhands/" + name);
+                 FileOutputStream output = new FileOutputStream(temporary, false)) {
+                byte[] buffer = new byte[16 * 1024];
+                int read;
+                while ((read = input.read(buffer)) >= 0) {
+                    if (read > 0) {
+                        output.write(buffer, 0, read);
+                    }
+                }
+                output.getFD().sync();
+            } catch (IOException error) {
+                if (temporary.exists() && !temporary.delete()) {
+                    android.util.Log.w(TAG, "could not remove " + temporary);
+                }
+                android.util.Log.e(TAG, "could not install VR hand asset " + name, error);
+                continue;
+            }
+
+            if (destination.exists() || !temporary.renameTo(destination)) {
+                if (temporary.exists() && !temporary.delete()) {
+                    android.util.Log.w(TAG, "could not remove " + temporary);
+                }
+                if (!destination.exists()) {
+                    android.util.Log.e(TAG, "could not publish VR hand asset " + name);
+                }
+            }
         }
     }
 

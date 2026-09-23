@@ -20,6 +20,7 @@
 
 # Never commit original or assembled Android/game artifacts
 /recon/
+/release/
 *.apk
 *.apks
 *.xapk

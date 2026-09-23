@@ -6,6 +6,39 @@ This repository contains the source code and build/install tools for the GTA
 San Andreas VR Quest mod. It does **not** contain GTA San Andreas, Rockstar
 assets, the sound mod, a prebuilt APK, native binaries, or signing keys.
 
+## University monolithic build
+
+This source kit also supports a legally owned, self-contained/offline GTA SA
+2.11.311 APK supplied for a university project. Use the complete monolithic APK
+as `-GamePackage`, pass `-AllowUnofficialSource`, and provide the supported
+PS2-style audio archive as `-AudioSource`:
+
+```powershell
+.\tools\build-and-install.ps1 `
+  -GamePackage "C:\path\to\gta_sa_2.11.311.apk" `
+  -AudioSource "C:\path\to\gta-sa-ps2-style-mod-pack_1786856007_737162.7z" `
+  -AllowUnofficialSource
+```
+
+For a one-click Windows build and install, run
+`BUILD_MONOLITHIC_ALPHA_V5.bat`. You can drag the monolithic APK and the audio
+archive onto the batch file, or run it with two arguments:
+
+```bat
+BUILD_MONOLITHIC_ALPHA_V5.bat "C:\path\to\gta_sa_2.11.311.apk" "C:\path\to\gta-sa-ps2-style-mod-pack_1786856007_737162.7z"
+```
+
+The script invokes the normal source build, adds `-AllowUnofficialSource`,
+signs and aligns the resulting Alpha v5 APK, and installs/publishes it when an
+authorized Quest is connected. Use `-BuildOnly` after the two paths if you want
+to build without touching a device.
+
+For a small offline demonstration, `release\Alpha-v5` contains the validated
+APK and the Quest payload used for testing. Connect a Quest with Developer Mode
+and USB debugging enabled, then run `release\Alpha-v5\INSTALL_ALPHA_V5.bat`.
+The installer uses the APK and payload already included there; it does not
+download or redistribute GTA data.
+
 > [!TIP]
 > **Join the Flat2VR Discord!** Development updates, player feedback, testing,
 > and discussion of the mod take place in the

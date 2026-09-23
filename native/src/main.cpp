@@ -945,6 +945,44 @@ void SendInputToGame(JNIEnv* env, jclass clazz) {
     // never sees — the pause menu freeze was exactly this gate going stale.
     vrcam::RefreshStereoGate();
 
+    // Four-control cutscene skip: holding both grips and both triggers for
+    // three seconds skips a formal story cutscene without relying on the
+    // mobile pause frontend. Edge-trigger the action so a held gesture cannot
+    // repeatedly call the game's cutscene teardown routine.
+    {
+        static float heldSeconds = 0.0f;
+        static bool skipLatched = false;
+        static auto lastSample = std::chrono::steady_clock::now();
+        const auto now = std::chrono::steady_clock::now();
+        const float sampleSeconds = std::clamp(
+            std::chrono::duration<float>(now - lastSample).count(),
+            0.0f, 0.25f);
+        lastSample = now;
+        const bool allControls = in.grip[0] >= 0.75f && in.grip[1] >= 0.75f &&
+            in.triggers[0] >= 0.75f && in.triggers[1] >= 0.75f;
+        const bool formalCutscene = g.CCutsceneMgr_ms_running != nullptr &&
+            *g.CCutsceneMgr_ms_running;
+        if (!allControls || !formalCutscene) {
+            heldSeconds = 0.0f;
+            skipLatched = false;
+        } else if (!skipLatched) {
+            heldSeconds += sampleSeconds;
+            if (heldSeconds >= 3.0f) {
+                if (g.CCutsceneMgr_Skip != nullptr) {
+                    g.CCutsceneMgr_Skip();
+                    LOGI("[cutscene.skip] skipped after four-control hold");
+                } else if (g.SkipIntroCutscene != nullptr) {
+                    g.SkipIntroCutscene[1] = 1;
+                    g.SkipIntroCutscene[2] = 1;
+                    LOGI("[cutscene.skip] requested through intro fallback");
+                } else {
+                    LOGW("[cutscene.skip] no compatible skip endpoint");
+                }
+                skipLatched = true;
+            }
+        }
+    }
+
     // Hold the game's own user pause for the whole pause-menu visit. Our
     // Menu-button path opens MobileMenu::InitForPause through the engine's
     // resume-tick flags, and that tick calls CTimer::EndUserPause just before
@@ -1120,7 +1158,17 @@ void SendInputToGame(JNIEnv* env, jclass clazz) {
             aboutArmed = false;
         }
 
-        const bool openChord = grips && (in.menu || in.y);
+        if (formalCutscene || widescreen) {
+            if (menuPage != PG_NONE) {
+                if (menuPage == PG_HOLSTER_CALIB) savr::holster::EndCalibrationPreview();
+                if (menuPage == PG_BASKETBALL_CALIB)
+                    savr::basketball::EndHandCalibration();
+                menuPage = PG_NONE;
+                LOGI("[vr.menu] closed while cutscene render owns the frame");
+            }
+        }
+        const bool openChord = !formalCutscene && !widescreen &&
+            grips && (in.menu || in.y);
         if (openChord && !openPrev) {
             if (menuPage == PG_HOLSTER_CALIB) savr::holster::EndCalibrationPreview();
             if (menuPage == PG_BASKETBALL_CALIB)
@@ -1139,7 +1187,7 @@ void SendInputToGame(JNIEnv* env, jclass clazz) {
         const int plus = heldValue(
             in.leftStick[0] >  0.65f || in.triggers[1] >= 0.55f, tPlus);
         const bool enter   = in.a && !enterPrev && !grips;   // A: enter/activate/reset
-        const bool back    = in.b && !backPrev && !grips;    // B: step back / close (grips = open chord)
+        const bool back    = in.b && !backPrev;              // B: step back / close
         enterPrev = in.a; backPrev = in.b;
 
         switch (menuPage) {
@@ -2020,7 +2068,8 @@ void SendInputToGame(JNIEnv* env, jclass clazz) {
     // into the stock frontend.
     static bool gameMenuWasDown = false;
     const bool menuGripActive = in.grip[0] >= 0.25f || in.grip[1] >= 0.25f;
-    const bool gameMenuDown=in.menu&&!menuGripActive&&!menuWasOpen&&!anyMenu;
+    const bool gameMenuDown=in.menu&&!menuGripActive&&!menuWasOpen&&!anyMenu &&
+        !vrcam::IsStereoActive();
     if (gameMenuDown&&!gameMenuWasDown&&inGameplay&&
         g.SkipIntroCutscene!=nullptr) {
         LOGI("[input] left Menu -> engine pause-menu request flags");

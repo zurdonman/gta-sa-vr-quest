@@ -245,7 +245,7 @@ def copy_zip_stream(
 ) -> None:
     info = destination_info or clone_zip_info(source_info)
     with source_archive.open(source_info, "r") as source, destination_archive.open(
-        info, "w", force_zip64=True
+        info, "w"
     ) as destination:
         shutil.copyfileobj(source, destination, length=1024 * 1024)
 
@@ -990,38 +990,83 @@ def patch_manifest(text: str) -> str:
         "<application", f'<application android:name="{APPLICATION_CLASS}"', 1
     ) + text[app_match.end() :]
 
-    pattern = rf'<activity[^>]*android:name="{re.escape(LAUNCHER_ACTIVITY)}".*?</activity>'
-    match = re.search(pattern, text, re.DOTALL)
-    if match is None:
-        raise KitError(f"launcher activity {LAUNCHER_ACTIVITY} not found")
-    block = match.group(0)
-    stripped = re.sub(
-        r"\s*<intent-filter>(?:(?!</intent-filter>).)*?LAUNCHER.*?</intent-filter>",
-        "",
-        block,
-        flags=re.DOTALL,
-    )
-    if stripped == block:
-        raise KitError(f"no launcher intent-filter on {LAUNCHER_ACTIVITY}")
-    text = text.replace(block, stripped, 1)
-
-    body = (
-        '\n            <meta-data android:name="com.oculus.vr.focusaware" android:value="true"/>'
-        "\n            <intent-filter>"
-        '\n                <action android:name="android.intent.action.MAIN"/>'
-        '\n                <category android:name="android.intent.category.LAUNCHER"/>'
+    vr_categories = (
         '\n                <category android:name="org.khronos.openxr.intent.category.IMMERSIVE_HMD"/>'
         '\n                <category android:name="com.oculus.intent.category.VR"/>'
-        "\n            </intent-filter>"
     )
-    text, count = re.subn(
-        rf'(<activity[^>]*android:name="{re.escape(GAME_ACTIVITY)}"[^>]*?)/>',
-        lambda found: f'{found.group(1)} android:exported="true">{body}\n        </activity>',
-        text,
-        count=1,
+    focus_aware = (
+        '\n            <meta-data android:name="com.oculus.vr.focusaware" android:value="true"/>'
     )
-    if count != 1:
+
+    game_pattern = rf'<activity[^>]*android:name="{re.escape(GAME_ACTIVITY)}".*?</activity>'
+    game_match = re.search(game_pattern, text, re.DOTALL)
+    if game_match is None:
         raise KitError(f"game activity {GAME_ACTIVITY} not found in the expected layout")
+    game_block = game_match.group(0)
+
+    downloader_pattern = rf'<activity[^>]*android:name="{re.escape(LAUNCHER_ACTIVITY)}".*?</activity>'
+    downloader_match = re.search(downloader_pattern, text, re.DOTALL)
+
+    if downloader_match is not None:
+        # Retail/store build: DownloaderActivity owns the LAUNCHER category and must
+        # be demoted, while GameActivity is promoted to the VR launcher.
+        dl_block = downloader_match.group(0)
+        dl_stripped = re.sub(
+            r"\s*<intent-filter>(?:(?!</intent-filter>).)*?LAUNCHER.*?</intent-filter>",
+            "",
+            dl_block,
+            flags=re.DOTALL,
+        )
+        if dl_stripped == dl_block:
+            raise KitError(f"no launcher intent-filter on {LAUNCHER_ACTIVITY}")
+        text = text.replace(dl_block, dl_stripped, 1)
+
+        body = (
+            '\n            <meta-data android:name="com.oculus.vr.focusaware" android:value="true"/>'
+            "\n            <intent-filter>"
+            '\n                <action android:name="android.intent.action.MAIN"/>'
+            '\n                <category android:name="android.intent.category.LAUNCHER"/>'
+            '\n                <category android:name="org.khronos.openxr.intent.category.IMMERSIVE_HMD"/>'
+            '\n                <category android:name="com.oculus.intent.category.VR"/>'
+            "\n            </intent-filter>"
+        )
+        text, count = re.subn(
+            rf'(<activity[^>]*android:name="{re.escape(GAME_ACTIVITY)}"[^>]*?)/>',
+            lambda found: f'{found.group(1)} android:exported="true">{body}\n        </activity>',
+            text,
+            count=1,
+        )
+        if count != 1:
+            raise KitError(f"game activity {GAME_ACTIVITY} could not be promoted to VR launcher")
+    else:
+        # Offline/monolithic build (game data bundled inside the APK, e.g. the
+        # user-owned self-contained package): GameActivity is already the launcher.
+        # Augment its existing LAUNCHER intent-filter with the VR categories and the
+        # focus-aware flag instead of adding a duplicate launcher.
+        launcher_filter = re.search(
+            r"<intent-filter>(?:(?!</intent-filter>).)*?android.intent.category.LAUNCHER.*?</intent-filter>",
+            game_block,
+            flags=re.DOTALL,
+        )
+        if launcher_filter is None:
+            raise KitError(
+                f"game activity {GAME_ACTIVITY} is not the launcher in this offline build; "
+                f"expected a LAUNCHER intent-filter to augment"
+            )
+        augmented = launcher_filter.group(0)
+        if "IMMERSIVE_HMD" not in augmented:
+            augmented = augmented.replace(
+                "</intent-filter>", f"{vr_categories}\n            </intent-filter>", 1
+            )
+        new_game_block = game_block.replace(launcher_filter.group(0), augmented, 1)
+        if focus_aware not in new_game_block:
+            new_game_block = re.sub(
+                rf'(<activity[^>]*android:name="{re.escape(GAME_ACTIVITY)}"[^>]*?>)',
+                lambda found: f"{found.group(1)}{focus_aware}",
+                new_game_block,
+                count=1,
+            )
+        text = text.replace(game_block, new_game_block, 1)
 
     text = text.replace(
         "    <application",
@@ -1106,26 +1151,36 @@ def rewrite_apk(
 ) -> None:
     pending = dict(replacements)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(source) as input_apk, zipfile.ZipFile(
-        destination, "w", allowZip64=True
-    ) as output_apk:
-        existing = {info.filename for info in input_apk.infolist()}
-        collision = sorted(set(additions) & existing)
-        if collision:
-            raise KitError(f"refusing to overwrite existing APK entries: {collision}")
-        for info in input_apk.infolist():
-            if is_signature_entry(info.filename):
-                continue
-            if info.filename in pending:
-                replacement_info = clone_zip_info(info)
-                output_apk.writestr(replacement_info, pending.pop(info.filename))
-            else:
-                copy_zip_stream(input_apk, info, output_apk)
-        for name, (data, compression) in additions.items():
-            info = zipfile.ZipInfo(name)
-            info.compress_type = compression
-            info.external_attr = 0o100644 << 16
-            output_apk.writestr(info, data)
+    classic_zip_limit = 0xFFFFFFFF
+    original_zip_limit = zipfile.ZIP64_LIMIT
+    zipfile.ZIP64_LIMIT = classic_zip_limit
+    try:
+        input_apk = zipfile.ZipFile(source)
+        output_apk = zipfile.ZipFile(destination, "w", allowZip64=True)
+    except Exception:
+        zipfile.ZIP64_LIMIT = original_zip_limit
+        raise
+    try:
+        with input_apk, output_apk:
+            existing = {info.filename for info in input_apk.infolist()}
+            collision = sorted(set(additions) & existing)
+            if collision:
+                raise KitError(f"refusing to overwrite existing APK entries: {collision}")
+            for info in input_apk.infolist():
+                if is_signature_entry(info.filename):
+                    continue
+                if info.filename in pending:
+                    replacement_info = clone_zip_info(info)
+                    output_apk.writestr(replacement_info, pending.pop(info.filename))
+                else:
+                    copy_zip_stream(input_apk, info, output_apk)
+            for name, (data, compression) in additions.items():
+                info = zipfile.ZipInfo(name)
+                info.compress_type = compression
+                info.external_attr = 0o100644 << 16
+                output_apk.writestr(info, data)
+    finally:
+        zipfile.ZIP64_LIMIT = original_zip_limit
     if pending:
         raise KitError(f"{source.name}: entries to replace were not found: {sorted(pending)}")
 
@@ -1302,6 +1357,15 @@ def assemble_apks(
             source.read_bytes(),
             zipfile.ZIP_DEFLATED,
         )
+    hand_assets: dict[str, tuple[bytes, int]] = {}
+    for name in HAND_FILES:
+        source = ROOT / "assets" / "vrhands" / name
+        if not source.is_file():
+            raise KitError(f"required VR hand asset is missing: {source}")
+        hand_assets[f"assets/vrhands/{name}"] = (
+            source.read_bytes(),
+            zipfile.ZIP_DEFLATED,
+        )
 
     clean_directory(output, build)
     patches: dict[Path, tuple[set[str], set[str]]] = {}
@@ -1325,6 +1389,8 @@ def assemble_apks(
                 replacements["AndroidManifest.xml"] = manifest
             add_or_replace(dex_name, dex_bytes, zipfile.ZIP_STORED)
             for name, (data, compression) in default_settings.items():
+                add_or_replace(name, data, compression)
+            for name, (data, compression) in hand_assets.items():
                 add_or_replace(name, data, compression)
         if apk.path == package.arm64.path:
             add_or_replace("lib/arm64-v8a/libsavr.so", native_bytes, zipfile.ZIP_DEFLATED)
